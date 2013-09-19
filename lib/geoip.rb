@@ -144,7 +144,7 @@ class GeoIP
 
   end
 
-  class ASN < Struct.new(:number, :asn)
+  class ASN < Struct.new(:number, :asn, :prefix, :prefixlen)
 
     alias as_num number
 
@@ -323,7 +323,7 @@ class GeoIP
     # bogus data.  There was concern over whether the changes to an
     # application's behaviour were always correct, but this has been tested
     # using an exhaustive search of the top 16 bits of the IP address space.
-    # The records where the change takes effect contained *no* valid data. 
+    # The records where the change takes effect contained *no* valid data.
     # If you're concerned, email me, and I'll send you the test program so
     # you can test whatever IP range you think is causing problems,
     # as I don't care to undertake an exhaustive search of the 32-bit space.
@@ -381,14 +381,18 @@ class GeoIP
       throw "Invalid GeoIP database type, can't look up ASN by IP"
     end
 
-    pos = seek_record(ipnum)
+    p = seek_record_and_get_prefixlen(ipnum)
+    pos = p[:offset]
+    prefixlen = p[:prefixlen]
+    prefix = IPAddr.new(ip).mask(prefixlen).to_s
     off = pos + (2*@record_length - 1) * @database_segments[0]
 
     record = atomic_read(MAX_ASN_RECORD_LENGTH, off)
+    return nil unless record
     record = record.sub(/\000.*/n, '')
 
     # AS####, Description
-    ASN.new($1, $2) if record =~ /^(AS\d+)\s(.*)$/
+    ASN.new($1.to_i, $2, prefix, prefixlen) if record =~ /^AS(\d+)\s(.*)$/
   end
 
   # Search a ISP GeoIP database for the specified host, returning the
@@ -657,7 +661,7 @@ class GeoIP
     return ip
   end
 
-  def seek_record(ipnum) #:nodoc:
+  def seek_record_and_get_prefixlen(ipnum) #:nodoc:
     # Binary search in the file.
     # Records are pairs of little-endian integers, each of @record_length.
     offset = 0
@@ -671,14 +675,18 @@ class GeoIP
       offset = le_to_ui(buf[0...@record_length].unpack("C*"))
 
       if (offset >= @database_segments[0])
-        return offset
+        return { :offset => offset, :prefixlen => 33 - mask.to_s(2).length }
       end
 
       mask >>= 1
     end
   end
 
-  def seek_record_v6(ipnum)
+  def seek_record(ipnum)
+    return seek_record_and_get_prefixlen(ipnum)[:offset]
+  end
+
+  def seek_record_and_get_prefixlen_v6(ipnum)
 
     # Binary search in the file.
     # Records are pairs of little-endian integers, each of @record_length.
@@ -693,12 +701,16 @@ class GeoIP
       offset = le_to_ui(buf[0...@record_length].unpack("C*"))
 
       if (offset >= @database_segments[0])
-        return offset
+        return { :offset => offset, :prefixlen => 129 - mask.to_s(2).length }
       end
 
       mask >>= 1
     end
 
+  end
+
+  def seek_record_v6(ipnum)
+    return seek_record_and_get_prefixlen_v6(ipnum)[:offset]
   end
 
   # Convert a big-endian array of numeric bytes to unsigned int.
